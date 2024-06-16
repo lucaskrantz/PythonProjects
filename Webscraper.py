@@ -133,6 +133,12 @@ def insert_data_into_db(connection, scraped_results):
     return added_count
 
 
+def clear_database(connection):
+    cursor = connection.cursor()
+    cursor.execute("DELETE FROM products")
+    connection.commit()
+    logging.info("Cleared all items from the database.")
+
 def search_database_by_title(connection, query_param):
     cursor = connection.cursor()
     query = '''SELECT title, price, link, description FROM products WHERE title LIKE ?'''
@@ -236,16 +242,40 @@ def main():
 
         # Continuous loop for user input until they choose to exit
         while True:
-            search_type = input("Enter search type (title/price) or type 'exit' to quit: ").strip().lower()
+            search_type = input("Enter search type (title/price) or type 'exit' to quit, type 'clear' to clear the database or type 'scrape' to scrape: ").strip().lower()
             if search_type == 'exit':
                 print("Exiting the program.")
                 break
 
-            if search_type not in ['title', 'price']:
+            if search_type not in ['title', 'price', 'clear', 'scrape']:
                 print("Invalid search type. Please enter 'title' or 'price'.")
                 continue
+            if search_type == 'clear':
+                clear_database(connection)
+                new_count = count_items_in_database(connection)
+                logging.info(f"Total number of items in the database: {new_count}")
+                continue
+            if search_type == 'scrape':
+                # Clean existing database prices
+                clean_database_prices(connection)
 
-            query_param = input(f"Enter the product {search_type} to search for: ").strip()
+                # Remove duplicates before scraping new data
+                duplicates_removed = remove_duplicates(connection)
+                logging.info(f"Number of duplicate items removed: {duplicates_removed}")
+                
+                initial_count = count_items_in_database(connection)
+                logging.info(f"Initial number of items in database: {initial_count}")
+
+                scraped_results, elements_count = scrape_data()
+                added_count = insert_data_into_db(connection, scraped_results)
+                
+                final_count = count_items_in_database(connection)
+                
+                logging.info(f"Number of elements scraped: {elements_count}")
+                logging.info(f"Number of items added: {added_count}")
+                logging.info(f"Total number of items in the database: {final_count}")
+                continue
+            query_param = input("Enter the product title or price to search for: ").strip()
 
             if search_type == 'title':
                 search_results = search_database_by_title(connection, query_param)
