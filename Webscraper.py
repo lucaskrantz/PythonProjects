@@ -7,7 +7,47 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
+def product_exists(connection, link):
+    cursor = connection.cursor()
+    cursor.execute("SELECT 1 FROM products WHERE link = ?", (link,))
+    return cursor.fetchone() is not None
+
 # Function to get product data
+
+def remove_duplicates(connection):
+    cursor = connection.cursor()
+    
+    # Find duplicates based on the normalized (lowercase, stripped) link
+    cursor.execute('''
+        WITH DuplicateLinks AS (
+            SELECT 
+                id, 
+                LOWER(TRIM(link)) AS normalized_link,
+                ROW_NUMBER() OVER (
+                    PARTITION BY LOWER(TRIM(link)) 
+                    ORDER BY id
+                ) AS rn
+            FROM products
+        )
+        SELECT id, normalized_link FROM DuplicateLinks WHERE rn > 1
+    ''')
+    rows = cursor.fetchall()
+
+    logging.info(f"Found {len(rows)} duplicate entries by link.")
+
+    if rows:
+        duplicates = [row[0] for row in rows]
+        logging.info(f"Duplicate IDs to remove: {duplicates}")
+
+        cursor.executemany('DELETE FROM products WHERE id = ?', [(id,) for id in duplicates])
+        connection.commit()
+
+    return len(rows)
+
+
+
+
 def get_product_data(session, url):
     logging.info(f"Fetching product data from {url}")
     try:
@@ -22,20 +62,39 @@ def get_product_data(session, url):
         logging.error(f"Request failed: {e}")
         return None
 
+def clean_database_prices(connection):
+    cursor = connection.cursor()
+    cursor.execute("SELECT id, price FROM products")
+    rows = cursor.fetchall()
+
+    for row in rows:
+        id_, price = row
+        # Normalize the price by removing 'kr', commas, and spaces
+        normalized_price = price.replace('kr', '').replace(',', '').replace(' ', '').strip()
+        cursor.execute('UPDATE products SET price = ? WHERE id = ?', (normalized_price, id_))
+    
+    connection.commit()
+    logging.info(f"Cleaned {len(rows)} price entries in the database.")
+
 # Function to scrape element data
+
 def scrape_element(session, element):
     title_element = element.find("a", class_="grid-view-item__link grid-view-item__image-container full-width-link")
     price_element = element.find("span", class_="price-item price-item--regular")
     link_url = element.find("a", class_="grid-view-item__link grid-view-item__image-container full-width-link")["href"]
 
+    # Normalize price by stripping 'kr', commas, spaces, and any additional whitespace
+    price_text = price_element.text.replace('kr', '').replace(',', '').replace(' ', '').strip()
+
     prod_desc = get_product_data(session, f"https://jus.se{link_url}")
     
     return {
         "title": title_element.text.strip(),
-        "price": price_element.text.strip(),
+        "price": price_text,
         "link": f"https://jus.se{link_url}",
         "description": prod_desc
     }
+
 
 def scrape_data():
     URL = "https://jus.se/collections/all-menswear/men"
@@ -58,20 +117,75 @@ def scrape_data():
 
 def insert_data_into_db(connection, scraped_results):
     cursor = connection.cursor()
-
+    added_count = 0
+    
     for res in scraped_results:
-        cursor.execute('''
-            INSERT INTO products (title, price, link, description)
-            VALUES (?, ?, ?, ?)
-        ''', (res["title"], res["price"], res["link"], res["description"]))
+        if not product_exists(connection, res["link"]):
+            cursor.execute('''
+                INSERT INTO products (title, price, link, description)
+                VALUES (?, ?, ?, ?)
+            ''', (res["title"], res["price"], res["link"], res["description"]))
+            logging.info(f"Inserted product: {res['title']}")
+            added_count += 1
+        else:
+            logging.info(f"Product already exists: {res['title']}")
+    
+    return added_count
 
-        logging.info(f"Inserted product: {res['title']}")
 
-def search_database(connection, query_param):
+def search_database_by_title(connection, query_param):
     cursor = connection.cursor()
     query = '''SELECT title, price, link, description FROM products WHERE title LIKE ?'''
     cursor.execute(query, ('%{}%'.format(query_param),))
     return cursor.fetchall()
+
+def search_database_by_price(connection, query_param, sort_order='ASC'):
+    cursor = connection.cursor()
+    operator = "="  # default operator
+
+    # Identify operator in query_param
+    if query_param.startswith('<'):
+        operator = "<"
+        value = query_param[1:].strip()
+    elif query_param.startswith('>'):
+        operator = ">"
+        value = query_param[1:].strip()
+    elif query_param.startswith('<='):
+        operator = "<="
+        value = query_param[2:].strip()
+    elif query_param.startswith('>='):
+        operator = ">="
+        value = query_param[2:].strip()
+    else:
+        value = query_param.strip()
+
+    try:
+        # Convert value to float to ensure it's a number
+        float(value)
+    except ValueError:
+        print("Invalid price input. Please enter a valid number.")
+        return []
+
+    # Normalize price in the database by stripping 'kr' and any whitespace
+    query = f'''
+        SELECT title, price, link, description FROM products 
+        WHERE CAST(price AS REAL) {operator} ?
+        ORDER BY CAST(price AS REAL) {sort_order}
+    '''
+    
+    logging.info(f"Executing query: {query} with value: {value}")
+    cursor.execute(query, (value,))
+    return cursor.fetchall()
+
+
+def log_all_prices(connection):
+    cursor = connection.cursor()
+    cursor.execute("SELECT id, price FROM products")
+    rows = cursor.fetchall()
+    for row in rows:
+        logging.info(f"ID: {row[0]}, Price: '{row[1]}'")
+
+
 
 def set_up_db(connection):
     cursor = connection.cursor()
@@ -90,35 +204,67 @@ def count_items_in_database(connection):
     cursor.execute("SELECT COUNT(*) FROM products")
     return cursor.fetchone()[0]
 
+def log_all_entries(connection):
+    cursor = connection.cursor()
+    cursor.execute("SELECT id, title, link FROM products")
+    rows = cursor.fetchall()
+    for row in rows:
+        logging.info(f"ID: {row[0]}, Title: '{row[1]}', Link: '{row[2]}'")
+
 def main():
     with sqlite3.connect("scraped_data.db") as connection:
         set_up_db(connection)
 
+        # Clean existing database prices
+        clean_database_prices(connection)
+
+        # Remove duplicates before scraping new data
+        duplicates_removed = remove_duplicates(connection)
+        logging.info(f"Number of duplicate items removed: {duplicates_removed}")
+        
         initial_count = count_items_in_database(connection)
         logging.info(f"Initial number of items in database: {initial_count}")
 
         scraped_results, elements_count = scrape_data()
-        insert_data_into_db(connection, scraped_results)
+        added_count = insert_data_into_db(connection, scraped_results)
         
         final_count = count_items_in_database(connection)
-        added_count = final_count - initial_count
         
         logging.info(f"Number of elements scraped: {elements_count}")
         logging.info(f"Number of items added: {added_count}")
         logging.info(f"Total number of items in the database: {final_count}")
 
-        user_input = input("Enter a product title to search for: ")
-        search_results = search_database(connection, user_input)
+        # Continuous loop for user input until they choose to exit
+        while True:
+            search_type = input("Enter search type (title/price) or type 'exit' to quit: ").strip().lower()
+            if search_type == 'exit':
+                print("Exiting the program.")
+                break
 
-        if search_results:
-            for result in search_results:
-                title, price, link, description = result
-                print(f"Title: {title}")
-                print(f"Price: {price}")
-                print(f"Link: {link}")
-                print(f"Description: {description}\n")
-        else:
-            print("No results found.")
+            if search_type not in ['title', 'price']:
+                print("Invalid search type. Please enter 'title' or 'price'.")
+                continue
 
+            query_param = input(f"Enter the product {search_type} to search for: ").strip()
+
+            if search_type == 'title':
+                search_results = search_database_by_title(connection, query_param)
+            elif search_type == 'price':
+                sort_order = input("Enter sort order (asc/desc): ").strip().lower()
+                if sort_order not in ['asc', 'desc']:
+                    print("Invalid sort order. Please enter 'asc' or 'desc'.")
+                    continue
+                search_results = search_database_by_price(connection, query_param, sort_order.upper())
+
+            if search_results:
+                for result in search_results:
+                    title, price, link, description = result
+                    print(f"Title: {title}")
+                    print(f"Price: {price}")
+                    print(f"Link: {link}")
+                    print(f"Description: {description}\n")
+            else:
+                print("No results found.")
 if __name__ == "__main__":
     main()
+
