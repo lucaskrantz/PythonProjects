@@ -3,7 +3,8 @@ import requests
 from bs4 import BeautifulSoup
 import sqlite3
 import logging
-
+import csv
+import os
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -45,9 +46,6 @@ def remove_duplicates(connection):
 
     return len(rows)
 
-
-
-
 def get_product_data(session, url):
     logging.info(f"Fetching product data from {url}")
     try:
@@ -75,6 +73,44 @@ def clean_database_prices(connection):
     
     connection.commit()
     logging.info(f"Cleaned {len(rows)} price entries in the database.")
+
+
+
+
+
+
+
+
+def export_data_to_csv(connection, filename='scraped_data.csv'):
+    # Ensure the filename ends with .csv
+    if not filename.endswith('.csv'):
+        filename += '.csv'
+
+    # Create the specified directory if it doesn't exist
+    directory = os.path.dirname(filename)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory)
+
+    cursor = connection.cursor()
+    cursor.execute("SELECT title, price, link, description FROM products")
+    rows = cursor.fetchall()
+
+    with open(filename, 'w', newline='') as csvfile:
+        fieldnames = ['title', 'price', 'link', 'description']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({
+                'title': row[0],
+                'price': row[1],
+                'link': row[2],
+                'description': row[3]
+            })
+
+    logging.info(f"Data exported to {filename} successfully.")
+    print(f"Data exported to {filename} successfully.")  # Additional feedback for the user
+
 
 # Function to scrape element data
 
@@ -242,19 +278,25 @@ def main():
 
         # Continuous loop for user input until they choose to exit
         while True:
-            search_type = input("Enter search type (title/price) or type 'exit' to quit, type 'clear' to clear the database or type 'scrape' to scrape: ").strip().lower()
+            search_type = input("Enter search type (title/price) or type 'exit' to quit, 'export' to export or type 'clear' to clear the database or type 'scrape' to scrape: ").strip().lower()
             if search_type == 'exit':
                 print("Exiting the program.")
                 break
 
-            if search_type not in ['title', 'price', 'clear', 'scrape']:
-                print("Invalid search type. Please enter 'title' or 'price'.")
+            if search_type not in ['title', 'price', 'clear', 'scrape', 'export']:
+                print("Invalid search type. Please enter 'title' or 'price', 'clear', 'scrape' or 'export'.")
                 continue
             if search_type == 'clear':
                 clear_database(connection)
                 new_count = count_items_in_database(connection)
                 logging.info(f"Total number of items in the database: {new_count}")
                 continue
+            if search_type == 'export':
+                filename = input("Enter the filename (with .csv extension) to export the data to: ").strip() or 'scraped_data.csv'  # default to scraped_data.csv if no filename provided
+                export_data_to_csv(connection, filename)
+                continue
+            
+            
             if search_type == 'scrape':
                 # Clean existing database prices
                 clean_database_prices(connection)
@@ -297,4 +339,3 @@ def main():
                 print("No results found.")
 if __name__ == "__main__":
     main()
-
