@@ -5,8 +5,59 @@ import sqlite3
 import logging
 import csv
 import os
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+import pandas as pd
+import textwrap
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+# Authentication and Setup for Google Sheets
+# def authenticate_google_sheets(credentials_file='credentials.json'):
+#     absolute_path = "/Users/lucas/PythonProjects/credentials.json"
+#     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+#     creds = ServiceAccountCredentials.from_json_keyfile_name(absolute_path, scope)
+#     client = gspread.authorize(creds)
+#     return client
+
+# def export_data_to_google_sheets(connection, sheet_name, credentials_file='/Users/lucas/PythonProjects/credentials.json', share_email=None):
+#     client = authenticate_google_sheets(credentials_file)
+    
+#     try:
+#         # Try to open the existing Google Sheet
+#         sheet = client.open(sheet_name).sheet1
+#     except gspread.exceptions.SpreadsheetNotFound:
+#         # Create a new Google Sheet if it doesn't exist
+#         sheet = client.create(sheet_name).sheet1
+    
+#     cursor = connection.cursor()
+#     cursor.execute("SELECT title, price, link, description FROM products")
+#     rows = cursor.fetchall()
+    
+#     # Prepare the data for Google Sheets
+#     df = pd.DataFrame(rows, columns=['Title', 'Price', 'Link', 'Description'])
+    
+#     # Clear the existing content in the sheet
+#     sheet.clear()
+
+#     # Write the DataFrame to Google Sheets
+#     sheet.update([df.columns.values.tolist()] + df.values.tolist())
+
+#     # Get the URL of the Google Sheet
+#     sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet.spreadsheet.id}/edit"
+#     logging.info(f"Data exported to Google Sheets: {sheet_name} successfully.")
+#     print(f"Data exported to Google Sheets: {sheet_name} successfully.")
+#     print(f"View the sheet at: {sheet_url}")  # Print the URL for easy access
+
+#     # Share the Google Sheet with a specified email if provided
+#     if share_email:
+#         sheet.share(share_email, perm_type='user', role='writer')
+#         logging.info(f"Google Sheet shared with: {share_email}")
+#         print(f"Google Sheet shared with: {share_email}")
+
+
 
 
 def product_exists(connection, link):
@@ -75,12 +126,6 @@ def clean_database_prices(connection):
     logging.info(f"Cleaned {len(rows)} price entries in the database.")
 
 
-
-
-
-
-
-
 def export_data_to_csv(connection, filename='scraped_data.csv'):
     # Ensure the filename ends with .csv
     if not filename.endswith('.csv'):
@@ -95,21 +140,30 @@ def export_data_to_csv(connection, filename='scraped_data.csv'):
     cursor.execute("SELECT title, price, link, description FROM products")
     rows = cursor.fetchall()
 
-    with open(filename, 'w', newline='') as csvfile:
-        fieldnames = ['title', 'price', 'link', 'description']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+    with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['Title', 'Price (kr)', 'Link', 'Description']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
 
         writer.writeheader()
         for row in rows:
             writer.writerow({
-                'title': row[0],
-                'price': row[1],
-                'link': row[2],
-                'description': row[3]
+                'Title': row[0].strip(),
+                'Price (kr)': row[1].strip(),
+                'Link': row[2].strip(),
+                'Description': ensure_wrappable(row[3].strip() if row[3] else '')
             })
 
     logging.info(f"Data exported to {filename} successfully.")
     print(f"Data exported to {filename} successfully.")  # Additional feedback for the user
+
+def ensure_wrappable(description, width=80):
+    """
+    Ensure the description is formatted to be easily wrappable within a set width.
+    """
+    wrapped_description = textwrap.fill(description, width=width)
+    return wrapped_description
+
+
 
 
 # Function to scrape element data
@@ -292,9 +346,18 @@ def main():
                 logging.info(f"Total number of items in the database: {new_count}")
                 continue
             if search_type == 'export':
-                filename = input("Enter the filename (with .csv extension) to export the data to: ").strip() or 'scraped_data.csv'  # default to scraped_data.csv if no filename provided
-                export_data_to_csv(connection, filename)
-                continue
+               file_format = input("Enter file format (csv/): ").strip().lower()
+            if file_format == 'csv':
+               filename = input("Enter the filename (with .csv extension) to export the data to: ").strip() or 'scraped_data.csv'
+               export_data_to_csv(connection, filename)
+            # elif file_format == 'google sheets':
+            #    sheet_name = input("Enter the Google Sheets name to export the data to: ").strip()
+            #    share_email = input("Enter your personal Google Account email to share the sheet (optional): ").strip()
+            #    export_data_to_google_sheets(connection, sheet_name, share_email=share_email)
+            else:
+               print("Invalid file format. Please enter 'csv', 'excel', or 'google sheets'.")
+               continue
+
             
             
             if search_type == 'scrape':
